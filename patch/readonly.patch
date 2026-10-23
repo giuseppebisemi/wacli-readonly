@@ -1,0 +1,73 @@
+diff --git a/cmd/wacli/root.go b/cmd/wacli/root.go
+index 41f3845..bb63474 100644
+--- a/cmd/wacli/root.go
++++ b/cmd/wacli/root.go
+@@ -50,6 +50,15 @@ type rootFlags struct {
+ 	timeout    time.Duration
+ 	readOnly   bool
+ 	lockWait   time.Duration
++	// writable is set only for the commands this read-only build lets write.
++	writable bool
++}
++
++// writableCommands are the only commands allowed to open WhatsApp for writing:
++// pairing the device and receiving messages. Everything else is read-only.
++var writableCommands = map[string]bool{
++	"wacli auth": true,
++	"wacli sync": true,
+ }
+ 
+ func execute(args []string) error {
+@@ -63,6 +72,7 @@ func execute(args []string) error {
+ 		SilenceErrors: true,
+ 		Version:       effectiveVersion(),
+ 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
++			flags.writable = writableCommands[cmd.CommandPath()]
+ 			wa.SetLibsignalEvents(out.NewEventWriter(os.Stderr, flags.events))
+ 		},
+ 	}
+@@ -189,8 +199,8 @@ func resolveStoreDir(flags *rootFlags) (string, error) {
+ }
+ 
+ func (f *rootFlags) isReadOnly() bool {
+-	if f == nil {
+-		return false
++	if f == nil || !f.writable {
++		return true
+ 	}
+ 	if f.readOnly {
+ 		return true
+diff --git a/cmd/wacli/sync.go b/cmd/wacli/sync.go
+index 52b0a38..052f23b 100644
+--- a/cmd/wacli/sync.go
++++ b/cmd/wacli/sync.go
+@@ -54,8 +54,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
+ 			if staleThreshold != 0 && staleThreshold < time.Second {
+ 				return fmt.Errorf("--stale-threshold must be at least 1s, got %s", staleThreshold)
+ 			}
+-			sendSpacing, err := parseSendSpacing(sendSpacingFlag)
+-			if err != nil {
++			if _, err := parseSendSpacing(sendSpacingFlag); err != nil {
+ 				return err
+ 			}
+ 			if maxStaleThreshold := appPkg.MaxStaleThreshold(); staleThreshold >= maxStaleThreshold {
+@@ -93,17 +92,9 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
+ 					stopSendDelegate()
+ 				}
+ 			}()
++			// Read-only build: no delegate server, so other processes cannot
++			// send, mark read or change chats through the running sync.
+ 			var afterConnect func(context.Context) error
+-			if mode == appPkg.SyncModeFollow {
+-				afterConnect = func(ctx context.Context) error {
+-					stop, err := startSendDelegateServer(ctx, a, sendSpacing)
+-					if err != nil {
+-						return err
+-					}
+-					stopSendDelegate = stop
+-					return nil
+-				}
+-			}
+ 
+ 			res, err := a.Sync(ctx, appPkg.SyncOptions{
+ 				Mode:                mode,

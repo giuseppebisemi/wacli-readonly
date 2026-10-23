@@ -1,0 +1,75 @@
+name: Build read-only release
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag (default: latest upstream release)"
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick upstream tag
+        id: tag
+        run: |
+          tag="${{ inputs.tag }}"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh api repos/openclaw/wacli/releases/latest -q .tag_name)"
+          fi
+          ro_tag="${tag}-ro"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ro_tag=$ro_tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$ro_tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$ro_tag already released"
+          fi
+
+      - name: Build
+        if: steps.tag.outputs.exists != 'true'
+        run: scripts/build.sh "${{ steps.tag.outputs.tag }}"
+
+      - name: Smoke test
+        if: steps.tag.outputs.exists != 'true'
+        run: scripts/smoke.sh dist/wacli
+
+      - name: Publish
+        if: steps.tag.outputs.exists != 'true'
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          ro_tag="${{ steps.tag.outputs.ro_tag }}"
+          {
+            echo "Read-only build of upstream [openclaw/wacli $tag](https://github.com/openclaw/wacli/releases/tag/$tag)."
+            echo
+            echo "Only \`auth\` (pairing) and \`sync\` can write; every other command runs read-only, and \`sync\` starts no delegate server."
+            echo
+            echo "Patch: \`patch/readonly.patch\` at ${GITHUB_SHA::7}. Smoke test passed."
+          } > notes.md
+          gh release create "$ro_tag" dist/wacli-linux-amd64.tar.gz dist/SHA256SUMS \
+            --title "$ro_tag" --notes-file notes.md --target "$GITHUB_SHA"
+
+      - name: Flag security releases
+        if: steps.tag.outputs.exists != 'true'
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          body="$(gh api "repos/openclaw/wacli/releases/tags/$tag" -q .body)"
+          if grep -qi "security" <<<"$body"; then
+            gh issue create \
+              --title "Upstream $tag mentions security: consider updating the VM" \
+              --body "Release notes: https://github.com/openclaw/wacli/releases/tag/$tag"
+          fi
