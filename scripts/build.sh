@@ -27,7 +27,7 @@ version="${tag#v}-ro"
 docker run --rm -v "$src:/src" -w /src "$go_image" sh -euc "
   apk add --no-cache build-base git >/dev/null
   CGO_ENABLED=1 CGO_CFLAGS='-Wno-error=missing-braces' GOOS=linux GOARCH=amd64 \
-    go build -tags sqlite_fts5 -trimpath \
+    go build -tags sqlite_fts5 -trimpath -buildvcs=false \
     -ldflags '-s -w -X main.version=$version -linkmode external -extldflags -static' \
     -o /src/wacli-bin ./cmd/wacli
 "
